@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Aztec Prover Dashboard</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body { margin: 18px; max-width: 1200px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .card { border:1px solid #e6e6e6; border-radius:14px; padding:14px; margin:12px 0; }
+    input, select, button { padding:10px 12px; border:1px solid #ddd; border-radius:10px; }
+    button { cursor:pointer; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; }
+    th { cursor:pointer; user-select:none; }
+    .muted { color:#666; font-size: 0.92rem; }
+    .pill { display:inline-block; padding:3px 9px; border:1px solid #ddd; border-radius:999px; font-size: 0.85rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .right { text-align:right; }
+    .ok { color: #0a7a2f; }
+    .bad { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Aztec Prover Dashboard</h1>
+  <div class="muted">
+    Data source: L1 Rollup logs → indexed locally. (ETH spent per proof from receipt gasUsed * effectiveGasPrice)
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="muted">API Base</label>
+      <input id="apiBase" style="min-width:340px" value="/aztec-api" />
+      <span class="muted">Example: https://your-domain/aztec-api</span>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <input id="q" placeholder="Search address (0x...)" style="min-width:340px" />
+      <select id="take">
+        <option value="50">Top 50</option>
+        <option value="100" selected>Top 100</option>
+        <option value="250">Top 250</option>
+        <option value="500">Top 500</option>
+        <option value="1000">Top 1000</option>
+      </select>
+      <button id="refresh">Refresh</button>
+      <span id="status" class="pill muted">idle</span>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <span class="pill">Total provers: <b id="totP">-</b></span>
+      <span class="pill">Total proofs: <b id="totProofs">-</b></span>
+      <span class="pill">Total ETH spent: <b id="totEth">-</b></span>
+      <span class="pill">Updated: <b id="updated">-</b></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th data-k="address">Prover</th>
+          <th class="right" data-k="proofsTotal">Proofs</th>
+          <th class="right" data-k="ethSpentEth">ETH spent</th>
+          <th class="right" data-k="avgCost">Avg ETH/proof</th>
+          <th data-k="lastSeenAt">Last seen</th>
+          <th class="right" data-k="lastSeenBlock">Last block</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const els = {
+      apiBase: document.getElementById('apiBase'),
+      q: document.getElementById('q'),
+      take: document.getElementById('take'),
+      refresh: document.getElementById('refresh'),
+      status: document.getElementById('status'),
+      rows: document.getElementById('rows'),
+      totP: document.getElementById('totP'),
+      totProofs: document.getElementById('totProofs'),
+      totEth: document.getElementById('totEth'),
+      updated: document.getElementById('updated'),
+    };
+
+    let data = [];
+    let sortKey = 'proofsTotal';
+    let sortDir = 'desc';
+
+    function setStatus(msg, ok=true) {
+      els.status.textContent = msg;
+      els.status.className = 'pill ' + (ok ? 'ok' : 'bad');
+    }
+
+    function weiToEth(weiStr) {
+      try {
+        const wei = BigInt(weiStr);
+        const ethInt = wei / 1000000000000000000n;
+        const ethFrac = wei % 1000000000000000000n;
+        const frac = ethFrac.toString().padStart(18,'0').slice(0,6);
+        return Number(`${ethInt}.${frac}`);
+      } catch { return 0; }
+    }
+
+    function fmtEth(n) {
+      return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    }
+
+    function shortAddr(a) {
+      return a.slice(0,6) + '…' + a.slice(-4);
+    }
+
+    function render() {
+      const q = els.q.value.trim().toLowerCase();
+      let rows = data;
+
+      if (q) rows = rows.filter(x => x.address.includes(q));
+
+      rows = rows.slice().sort((a,b) => {
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        if (typeof av === 'number' && typeof bv === 'number') return sortDir === 'asc' ? av-bv : bv-av;
+        if (typeof av === 'string' && typeof bv === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+        return 0;
+      });
+
+      els.rows.innerHTML = rows.map(r => {
+        const href = `https://etherscan.io/address/${r.address}`;
+        return `
+          <tr>
+            <td class="mono"><a href="${href}" target="_blank" rel="noreferrer">${shortAddr(r.address)}</a></td>
+            <td class="right">${r.proofsTotal.toLocaleString()}</td>
+            <td class="right">${fmtEth(r.ethSpentEth)}</td>
+            <td class="right">${fmtEth(r.avgCost)}</td>
+            <td>${new Date(r.lastSeenAt).toISOString().replace('T',' ').replace('.000Z','Z')}</td>
+            <td class="right">${r.lastSeenBlock.toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('');
+
+      // totals across fetched dataset (not global chain totals)
+      const totProofs = rows.reduce((s,x)=>s+x.proofsTotal,0);
+      const totEth = rows.reduce((s,x)=>s+x.ethSpentEth,0);
+
+      els.totP.textContent = rows.length.toLocaleString();
+      els.totProofs.textContent = totProofs.toLocaleString();
+      els.totEth.textContent = fmtEth(totEth);
+      els.updated.textContent = new Date().toISOString().replace('T',' ').slice(0,19) + 'Z';
+    }
+
+    async function load() {
+      const base = els.apiBase.value.replace(/\/+$/,'');
+      const take = Number(els.take.value);
+
+      setStatus('loading…', true);
+
+      const url = `${base}/provers?take=${take}`;
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+
+        data = json.map(x => {
+          const ethSpentEth = weiToEth(x.ethSpentWeiTotal);
+          const proofsTotal = Number(x.proofsTotal || 0);
+          return {
+            address: String(x.address || '').toLowerCase(),
+            proofsTotal,
+            ethSpentWeiTotal: String(x.ethSpentWeiTotal || '0'),
+            ethSpentEth,
+            avgCost: proofsTotal > 0 ? ethSpentEth / proofsTotal : 0,
+            lastSeenAt: x.lastSeenAt,
+            lastSeenBlock: Number(x.lastSeenBlock || 0),
+          };
+        });
+
+        setStatus('ok', true);
+        render();
+      } catch (e) {
+        setStatus(`error: ${e.message || e}`, false);
+      }
+    }
+
+    document.querySelectorAll('th[data-k]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.getAttribute('data-k');
+        if (sortKey === k) sortDir = (sortDir === 'asc' ? 'desc' : 'asc');
+        else { sortKey = k; sortDir = 'desc'; }
+        render();
+      });
+    });
+
+    els.q.addEventListener('input', render);
+    els.refresh.addEventListener('click', load);
+
+    load();
+  </script>
+</body>
+</html>
